@@ -1,0 +1,89 @@
+import tensorflow as tf
+from tensorflow.keras import layers, models, optimizers, regularizers
+from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.datasets import cifar10
+from tensorflow.keras.utils import to_categorical
+
+# Load and preprocess the CIFAR-10 dataset
+(x_train, y_train), (x_test, y_test) = cifar10.load_data()
+
+# Normalize the pixel values (0-255 to 0-1)
+x_train = x_train.astype('float32') / 255.0
+x_test = x_test.astype('float32') / 255.0
+
+# One-hot encode the labels
+y_train = to_categorical(y_train, 10)
+y_test = to_categorical(y_test, 10)
+
+# Data Augmentation
+datagen = ImageDataGenerator(
+    rotation_range=20,
+    width_shift_range=0.2,
+    height_shift_range=0.2,
+    horizontal_flip=True
+)
+datagen.fit(x_train)
+
+# Build the model using the Functional API with transfer learning (ResNet50)
+base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(32, 32, 3))
+
+# Freeze the base model so its weights are not updated during training
+base_model.trainable = False
+
+# Add custom layers on top of the base model
+inputs = layers.Input(shape=(32, 32, 3))
+x = base_model(inputs, training=False)  # Set training=False to avoid updating batchnorm stats
+x = layers.GlobalAveragePooling2D()(x)  # Pool the feature maps from ResNet50
+
+# Regularization with Dropout and L2 regularizer
+x = layers.Dense(256, activation='relu', kernel_regularizer=regularizers.l2(0.001))(x)
+x = layers.Dropout(0.5)(x)  # Dropout to prevent overfitting
+x = layers.BatchNormalization()(x)  # Batch Normalization to stabilize training
+
+# Output layer for 10 classes (softmax for classification)
+outputs = layers.Dense(10, activation='softmax')(x)
+
+# Define the model
+model = models.Model(inputs, outputs)
+
+# Compile the model with Adam optimizer and categorical crossentropy loss
+model.compile(
+    optimizer=optimizers.Adam(learning_rate=0.001),
+    loss='categorical_crossentropy',
+    metrics=['accuracy']
+)
+
+# Callbacks: EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+checkpoint = ModelCheckpoint('best_model.h5', monitor='val_loss', save_best_only=True)
+reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
+
+# Fit the model with data augmentation
+history = model.fit(
+    datagen.flow(x_train, y_train, batch_size=64),
+    validation_data=(x_test, y_test),
+    epochs=100,
+    callbacks=[early_stop, checkpoint, reduce_lr]
+)
+
+# Fine-tuning: Unfreeze some layers of ResNet50 and continue training
+base_model.trainable = True
+model.compile(
+    optimizer=optimizers.Adam(learning_rate=1e-5),  # Lower learning rate for fine-tuning
+    loss='categorical_crossentropy',
+    metrics=['accuracy']
+)
+
+# Fine-tune the model (optional, can skip this part if not needed)
+history_finetune = model.fit(
+    datagen.flow(x_train, y_train, batch_size=64),
+    validation_data=(x_test, y_test),
+    epochs=50,
+    callbacks=[early_stop, checkpoint, reduce_lr]
+)
+
+# Evaluate the model on test data
+test_loss, test_acc = model.evaluate(x_test, y_test)
+print(f'Test accuracy: {test_acc:.4f}')
