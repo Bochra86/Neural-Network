@@ -1,0 +1,89 @@
+import tensorflow as tf
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout
+from tensorflow.keras.optimizers import Adam
+
+# Set parameters
+img_height = 224  # Image height (for ResNet50 input size)
+img_width = 224   # Image width (for ResNet50 input size)
+batch_size = 32
+num_classes = 5  # For example, 5 product categories
+epochs = 10
+
+# Prepare image data generators (for training and validation sets)
+train_datagen = ImageDataGenerator(
+    rescale=1./255,
+    rotation_range=40,
+    width_shift_range=0.2,
+    height_shift_range=0.2,
+    shear_range=0.2,
+    zoom_range=0.2,
+    horizontal_flip=True,
+    fill_mode='nearest'
+)
+
+test_datagen = ImageDataGenerator(rescale=1./255)
+
+train_generator = train_datagen.flow_from_directory(
+    'data/train',  # Path to the train dataset
+    target_size=(img_height, img_width),
+    batch_size=batch_size,
+    class_mode='categorical'
+)
+
+validation_generator = test_datagen.flow_from_directory(
+    'data/validation',  # Path to the validation dataset
+    target_size=(img_height, img_width),
+    batch_size=batch_size,
+    class_mode='categorical'
+)
+
+# Load pre-trained ResNet50 model without the top classifier layers
+base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(img_height, img_width, 3))
+
+# Freeze the base model (not training its weights)
+base_model.trainable = False
+
+# Build the full model
+model = Sequential([
+    base_model,
+    GlobalAveragePooling2D(),
+    Dense(1024, activation='relu'),
+    Dropout(0.5),
+    Dense(num_classes, activation='softmax')  # Output layer with the number of classes
+])
+
+# Compile the model
+model.compile(optimizer=Adam(lr=0.0001), loss='categorical_crossentropy', metrics=['accuracy'])
+
+# Train the model
+history = model.fit(
+    train_generator,
+    steps_per_epoch=train_generator.samples // batch_size,
+    epochs=epochs,
+    validation_data=validation_generator,
+    validation_steps=validation_generator.samples // batch_size
+)
+
+# Fine-tuning: Unfreeze some layers of the base model and continue training
+base_model.trainable = True
+for layer in base_model.layers[:100]:  # Freeze early layers and unfreeze the last few layers
+    layer.trainable = False
+
+# Recompile and continue training
+model.compile(optimizer=Adam(lr=0.00001), loss='categorical_crossentropy', metrics=['accuracy'])
+
+# Fine-tune the model
+history_finetune = model.fit(
+    train_generator,
+    steps_per_epoch=train_generator.samples // batch_size,
+    epochs=5,
+    validation_data=validation_generator,
+    validation_steps=validation_generator.samples // batch_size
+)
+
+# Evaluate the final model
+loss, accuracy = model.evaluate(validation_generator)
+print(f"Final accuracy: {accuracy * 100:.2f}%")
